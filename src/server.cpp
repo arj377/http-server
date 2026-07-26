@@ -11,6 +11,7 @@
 #include <string>
 #include <mutex>
 #include <thread>
+#include <sstream>
 
 #define PORT "8080"
 #define BACKLOG 10
@@ -43,6 +44,8 @@ int main()
     struct sockaddr_storage their_addr; // Info about client's IP
     socklen_t addr_size;
     char s[INET6_ADDRSTRLEN]; // Holds the string to present in the terminal
+    char buf[4096];
+    
 
     memset(&hints, 0, sizeof(hints)); // Clear hints first
     hints.ai_family = AF_UNSPEC;      // IPv6 or IPv4
@@ -123,15 +126,31 @@ int main()
             continue;
         }
         log("Connected: " + std::string(s));
+
+        int bytesRead = recv(new_fd, buf, sizeof(buf), 0);
+        if (bytesRead == -1)
+        {
+            perror("recv");
+            close(new_fd);
+            continue;
+        }
+        else if (bytesRead == 0)
+        {
+            log("Client disconnected.");
+            close(new_fd);
+            continue; // Go back to accept() and wait for another client
+        }
+        std:: string input(buf, bytesRead);
+        std::istringstream parser(input);
+        std::string method, path, version;
+        parser >> method >> path >> version;
+
+        log("Method: " + method);
+        log("Path: " + path);
+        log("Version: " + version);
+
+
         close(new_fd);
-        log("Disconnected: " + std::string(s));
-
-
-        // Add this client to the queue awaiting a worker thread
-        /*pool.enqueue([new_fd] {
-            handle_client(new_fd);
-        });
-        */
     }
     return 0;
 }
