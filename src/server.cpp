@@ -59,7 +59,7 @@ bool sendAll(int socket, const std::string &message)
 }
 
 void handleClient(int socket)
-{h
+{
     char buf[4096];
     int bytesRead = recv(socket, buf, sizeof(buf), 0);
     if (bytesRead == -1)
