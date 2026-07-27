@@ -14,11 +14,13 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include "ThreadPool.h"
 
 #define PORT "8080"
 #define BACKLOG 10
 
 std::mutex logMutex;
+
 
 void log(const std::string &message)
 {
@@ -54,6 +56,188 @@ bool sendAll(int socket, const std::string &message)
         }
     }
     return true;
+}
+
+void handleClient(int socket)
+{h
+    char buf[4096];
+    int bytesRead = recv(socket, buf, sizeof(buf), 0);
+    if (bytesRead == -1)
+    {
+        perror("recv");
+        close(socket);
+        return;
+    }
+    else if (bytesRead == 0)
+    {
+        log("Client disconnected.");
+        close(socket);
+        return; // Go back to accept() and wait for another client
+    }
+    std::string request(buf, bytesRead);
+    std::istringstream parser(request);
+    std::string method, path, version;
+    parser >> method >> path >> version;
+    std::string contentType;
+
+    log("Method: " + method);
+    log("Path: " + path);
+    log("Version: " + version);
+
+    std::string body, status;
+    char readBuf[4096];
+    int fd, n;
+
+    if (path.find("..") != std::string::npos) // .. exists in the path
+    {
+        status = "403 Forbidden";
+        body = "403 Forbidden";
+        contentType = "text/plain";
+    }
+    else if (method.empty() || path.empty() || version.empty() ||
+             (version != "HTTP/1.1" && version != "HTTP/1.0"))
+    {
+        status = "400 Bad Request"; // Invalid HTTP Request
+        body = "400 Bad Request";
+        contentType = "text/plain";
+    }
+    else if (method != "GET")
+    {
+        status = "405 Method Not Allowed"; // Method is not supported
+        body = "405 Method Not Allowed";
+        contentType = "text/plain";
+    }
+    else
+    {
+        if (path == "/")
+        {
+            status = "200 OK";
+            fd = open("../static/index.html", O_RDONLY); // ../ takes it back to the project root
+            if (fd == -1)
+            {
+                perror("open");
+                contentType = "text/plain";
+                body = "Failed to load /index.html";
+                status = "500 Internal Server Error"; // Sends an HTTP error back to the client
+            }
+            else
+            {
+                contentType = "text/html";
+                while ((n = read(fd, readBuf, sizeof(readBuf))) > 0)
+                {
+                    std::string rB(readBuf, n);
+                    body += rB;
+                }
+
+                if (n == -1)
+                {
+                    perror("read");
+                    status = "500 Internal Server Error";
+                    body = "500 Internal Server Error";
+                    contentType = "text/plain";
+                }
+                close(fd);
+            }
+        }
+        else
+        {
+            std::string fileName = "../static" + path;
+            fd = open(fileName.c_str(), O_RDONLY);
+            if (fd == -1)
+            {
+                perror("open");
+                contentType = "text/plain";
+                body = "404 Not Found";
+                status = "404 Not Found"; // Resource requested by client is not available
+            }
+            else
+            {
+                while ((n = read(fd, readBuf, sizeof(readBuf))) > 0)
+                {
+                    std::string rB(readBuf, n);
+                    body += rB;
+                }
+                if (n == -1)
+                {
+                    perror("read");
+                    status = "500 Internal Server Error";
+                    body = "500 Internal Server Error";
+                    contentType = "text/plain";
+                }
+                else
+                {
+                    status = "200 OK";
+                    size_t dotPlace = path.rfind("."); // Gets the last dot
+                    if (dotPlace == std::string::npos)
+                    {
+                        contentType = "application/octet-stream";
+                    }
+                    else
+                    {
+                        std::string extension = path.substr(dotPlace);
+                        if (extension == ".html")
+                        {
+                            contentType = "text/html";
+                        }
+                        else if (extension == ".css")
+                        {
+                            contentType = "text/css";
+                        }
+                        else if (extension == ".js")
+                        {
+                            contentType = "application/javascript";
+                        }
+                        else if (extension == ".jpg" || extension == ".jpeg")
+                        {
+                            contentType = "image/jpeg";
+                        }
+                        else if (extension == ".png")
+                        {
+                            contentType = "image/png";
+                        }
+                        else if (extension == ".gif")
+                        {
+                            contentType = "image/gif";
+                        }
+                        else if (extension == ".svg")
+                        {
+                            contentType = "image/svg+xml";
+                        }
+                        else if (extension == ".txt")
+                        {
+                            contentType = "text/plain";
+                        }
+                        else if (extension == ".json")
+                        {
+                            contentType = "application/json";
+                        }
+                        else if (extension == ".pdf")
+                        {
+                            contentType = "application/pdf";
+                        }
+                        else
+                        {
+                            contentType = "application/octet-stream";
+                        }
+                    }
+                }
+            }
+            close(fd);
+        }
+    }
+
+    std::string response =  "HTTP/1.1 " + status + "\r\n" 
+                            "Content-Type: " + contentType + "\r\n"
+                            "Content-Length: " + std::to_string(body.size()) + "\r\n"
+                            "\r\n" +
+                            body;
+
+    if (!sendAll(socket, response))
+    {
+        perror("send");
+    }
+
+    close(socket);
 }
 
 int main()
@@ -127,6 +311,7 @@ int main()
     }
 
     std::cout << "HTTP Server: waiting for connections...\n";
+    ThreadPool pool(4);
 
     while (true)
     {
@@ -148,184 +333,9 @@ int main()
         }
         log("Connected: " + std::string(ip));
 
-        char buf[4096];
-        int bytesRead = recv(new_fd, buf, sizeof(buf), 0);
-        if (bytesRead == -1)
-        {
-            perror("recv");
-            close(new_fd);
-            continue;
-        }
-        else if (bytesRead == 0)
-        {
-            log("Client disconnected.");
-            close(new_fd);
-            continue; // Go back to accept() and wait for another client
-        }
-        std::string request(buf, bytesRead);
-        std::istringstream parser(request);
-        std::string method, path, version;
-        parser >> method >> path >> version;
-        std::string contentType;
-
-        log("Method: " + method);
-        log("Path: " + path);
-        log("Version: " + version);
-
-        std::string body, status;
-        char readBuf[4096];
-        int fd, n;
-
-        if (path.find("..") != std::string::npos) // .. exists in the path
-        {
-            status = "403 Forbidden";
-            body = "403 Forbidden";
-            contentType = "text/plain";
-        }
-        else if (method.empty() || path.empty() || version.empty() ||
-                (version != "HTTP/1.1" && version != "HTTP/1.0"))
-        {
-            status = "400 Bad Request"; // Invalid HTTP Request
-            body = "400 Bad Request";
-            contentType = "text/plain";
-        }
-        else if (method != "GET")
-        {
-            status = "405 Method Not Allowed"; // Method is not supported
-            body = "405 Method Not Allowed";
-            contentType = "text/plain";
-        }
-        else 
-        {
-            if (path == "/")
-            {
-                status = "200 OK";
-                fd = open("../static/index.html", O_RDONLY); // ../ takes it back to the project root
-                if (fd == -1)
-                {
-                    perror("open");
-                    contentType = "text/plain";
-                    body = "Failed to load /index.html";
-                    status = "500 Internal Server Error"; // Sends an HTTP error back to the client
-                }
-                else
-                {
-                    contentType = "text/html";
-                    while ((n = read(fd, readBuf, sizeof(readBuf))) > 0)
-                    {
-                        std::string rB(readBuf, n);
-                        body += rB;
-                    }
-
-                    if (n == -1)
-                    {
-                        perror("read");
-                        status = "500 Internal Server Error";
-                        body = "500 Internal Server Error";
-                        contentType = "text/plain";
-                    }
-                    close(fd);
-                }
-            }
-            else 
-            {
-                std::string fileName = "../static" + path;
-                fd = open(fileName.c_str(), O_RDONLY);
-                if (fd == -1)
-                {
-                    perror("open");
-                    contentType = "text/plain";
-                    body = "404 Not Found";
-                    status = "404 Not Found"; // Resource requested by client is not available
-                }
-                else 
-                {
-                    while ((n = read(fd, readBuf, sizeof(readBuf))) > 0)
-                    {
-                        std::string rB(readBuf, n);
-                        body += rB;
-                    }
-                    if (n == -1)
-                    {
-                        perror("read");
-                        status = "500 Internal Server Error";
-                        body = "500 Internal Server Error";
-                        contentType = "text/plain";
-                    }
-                    else
-                    {
-                        status = "200 OK";
-                        size_t dotPlace = path.rfind("."); // Gets the last dot
-                        if (dotPlace == std::string::npos)
-                        {
-                            contentType = "application/octet-stream";
-                        }
-                        else
-                        {
-                        std::string extension = path.substr(dotPlace);
-                            
-                            if (extension == ".html")
-                            {
-                                contentType = "text/html";
-                            }
-                            else if (extension == ".css")
-                            {
-                                contentType = "text/css";
-                            }
-                            else if (extension == ".js")
-                            {
-                                contentType = "application/javascript";
-                            }
-                            else if (extension == ".jpg" || extension == ".jpeg")
-                            {
-                                contentType = "image/jpeg";
-                            }
-                            else if (extension == ".png")
-                            {
-                                contentType = "image/png";
-                            }
-                            else if (extension == ".gif")
-                            {
-                                contentType = "image/gif";
-                            }
-                            else if (extension == ".svg")
-                            {
-                                contentType = "image/svg+xml";
-                            }
-                            else if (extension == ".txt")
-                            {
-                                contentType = "text/plain";
-                            }
-                            else if (extension == ".json")
-                            {
-                                contentType = "application/json";
-                            }
-                            else if (extension == ".pdf")
-                            {
-                                contentType = "application/pdf";
-                            }
-                            else
-                            {
-                                contentType = "application/octet-stream";
-                            }
-                        }
-                    }
-                }
-                close(fd);
-            }
-        }
-  
-        std::string response = "HTTP/1.1 " + status + "\r\n"
-                                "Content-Type: " + contentType + "\r\n"
-                                "Content-Length: " + std::to_string(body.size()) + "\r\n"
-                                "\r\n" +
-                                body;
-
-        if (!sendAll(new_fd, response)) {
-            perror("send");
-        }
-
-        close(new_fd);
+        pool.enqueue([new_fd] {
+            handleClient(new_fd);
+        }); // Creates a callable function instead of executing first
     }
     return 0;
 }
