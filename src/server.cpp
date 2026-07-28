@@ -57,11 +57,40 @@ bool sendAll(int socket, const std::string &message)
     return true;
 }
 
+bool sendFileAll(int fd, int socket)
+{
+    struct stat buf;
+    int stats = fstat(fd, &buf);
+    if (stats == -1)
+    {
+        perror("stats");
+        return false;
+    }
+    off_t total = buf.st_size;
+    off_t sent = 0;
+
+    while (sent < total)
+    {
+        off_t len = total - sent;
+
+        if (sendfile(fd, socket, sent, &len, NULL, 0) == -1)
+        {
+            perror("sendfile");
+            return false;
+        }
+
+        sent += len;
+    }
+
+    return true;
+}
+
 void handleClient(int socket)
 {
     while (true)
     {
         bool shouldClose = false;
+        bool isFileResponse = false;
         char buf[4096];
         int bytesRead = recv(socket, buf, sizeof(buf), 0);
         if (bytesRead == -1)
@@ -101,7 +130,7 @@ void handleClient(int socket)
             }
             if (header == "connection:")
             {
-                connectionStatus = line.substr(13,5); // Check specifically for close
+                connectionStatus = line.substr(13, 5); // Check specifically for close
                 for (char &c : connectionStatus)
                 {
                     c = std::tolower(c);
@@ -120,7 +149,7 @@ void handleClient(int socket)
 
         std::string body, status;
         char readBuf[4096];
-        int fd, n;
+        int fd = -1, n;
 
         if (path.find("..") != std::string::npos) // .. exists in the path
         {
@@ -129,7 +158,7 @@ void handleClient(int socket)
             contentType = "text/plain";
         }
         else if (method.empty() || path.empty() || version.empty() ||
-                 (version != "HTTP/1.1" && version != "HTTP/1.0"))
+                 (version != "HTTP/1.1" && version != "HTTP/1.0")) // Valid HTTP request
         {
             status = "400 Bad Request"; // Invalid HTTP Request
             body = "400 Bad Request";
@@ -143,133 +172,126 @@ void handleClient(int socket)
         }
         else
         {
-            if (path == "/")
+            if (path == "/") // Set to standard path
             {
-                status = "200 OK";
-                fd = open("../static/index.html", O_RDONLY); // ../ takes it back to the project root
-                if (fd == -1)
-                {
-                    perror("open");
-                    contentType = "text/plain";
-                    body = "Failed to load /index.html";
-                    status = "500 Internal Server Error"; // Sends an HTTP error back to the client
-                }
-                else
-                {
-                    contentType = "text/html";
-                    while ((n = read(fd, readBuf, sizeof(readBuf))) > 0)
-                    {
-                        std::string rB(readBuf, n);
-                        body += rB;
-                    }
+                path = "/index.html";
+            }
 
-                    if (n == -1)
-                    {
-                        perror("read");
-                        status = "500 Internal Server Error";
-                        body = "500 Internal Server Error";
-                        contentType = "text/plain";
-                    }
-                    close(fd);
-                }
+            std::string fileName = "../static" + path;
+            fd = open(fileName.c_str(), O_RDONLY);
+            if (fd == -1)
+            {
+                perror("open");
+                contentType = "text/plain";
+                body = "404 Not Found";
+                status = "404 Not Found"; // Resource requested by client is not available
             }
             else
             {
-                std::string fileName = "../static" + path;
-                fd = open(fileName.c_str(), O_RDONLY);
-                if (fd == -1)
+                isFileResponse = true;
+                status = "200 OK";
+                size_t dotPlace = path.rfind("."); // Gets the last dot
+                if (dotPlace == std::string::npos) // No dot place --> just set to octet-stream
                 {
-                    perror("open");
-                    contentType = "text/plain";
-                    body = "404 Not Found";
-                    status = "404 Not Found"; // Resource requested by client is not available
+                    contentType = "application/octet-stream";
                 }
                 else
                 {
-                    while ((n = read(fd, readBuf, sizeof(readBuf))) > 0)
+                    std::string extension = path.substr(dotPlace);
+                    if (extension == ".html")
                     {
-                        std::string rB(readBuf, n);
-                        body += rB;
+                        contentType = "text/html";
                     }
-                    if (n == -1)
+                    else if (extension == ".css")
                     {
-                        perror("read");
-                        status = "500 Internal Server Error";
-                        body = "500 Internal Server Error";
+                        contentType = "text/css";
+                    }
+                    else if (extension == ".js")
+                    {
+                        contentType = "application/javascript";
+                    }
+                    else if (extension == ".jpg" || extension == ".jpeg")
+                    {
+                        contentType = "image/jpeg";
+                    }
+                    else if (extension == ".png")
+                    {
+                        contentType = "image/png";
+                    }
+                    else if (extension == ".gif")
+                    {
+                        contentType = "image/gif";
+                    }
+                    else if (extension == ".svg")
+                    {
+                        contentType = "image/svg+xml";
+                    }
+                    else if (extension == ".txt")
+                    {
                         contentType = "text/plain";
+                    }
+                    else if (extension == ".json")
+                    {
+                        contentType = "application/json";
+                    }
+                    else if (extension == ".pdf")
+                    {
+                        contentType = "application/pdf";
                     }
                     else
                     {
-                        status = "200 OK";
-                        size_t dotPlace = path.rfind("."); // Gets the last dot
-                        if (dotPlace == std::string::npos)
-                        {
-                            contentType = "application/octet-stream";
-                        }
-                        else
-                        {
-                            std::string extension = path.substr(dotPlace);
-                            if (extension == ".html")
-                            {
-                                contentType = "text/html";
-                            }
-                            else if (extension == ".css")
-                            {
-                                contentType = "text/css";
-                            }
-                            else if (extension == ".js")
-                            {
-                                contentType = "application/javascript";
-                            }
-                            else if (extension == ".jpg" || extension == ".jpeg")
-                            {
-                                contentType = "image/jpeg";
-                            }
-                            else if (extension == ".png")
-                            {
-                                contentType = "image/png";
-                            }
-                            else if (extension == ".gif")
-                            {
-                                contentType = "image/gif";
-                            }
-                            else if (extension == ".svg")
-                            {
-                                contentType = "image/svg+xml";
-                            }
-                            else if (extension == ".txt")
-                            {
-                                contentType = "text/plain";
-                            }
-                            else if (extension == ".json")
-                            {
-                                contentType = "application/json";
-                            }
-                            else if (extension == ".pdf")
-                            {
-                                contentType = "application/pdf";
-                            }
-                            else
-                            {
-                                contentType = "application/octet-stream";
-                            }
-                        }
+                        contentType = "application/octet-stream";
                     }
                 }
+            }
+        }
+        int bodySize;
+        if (!body.empty())
+        {
+            bodySize = body.size();
+        }
+        else
+        {
+            struct stat b;
+            int stats = fstat(fd, &b);
+            if (stats == -1)
+            {
+                perror("fstat");
+                status = "500 Internal Server Error";
+                body = "500 Internal Server Error";
+                contentType = "text/plain";
+                bodySize = body.size();
+            }
+            else
+            {
+                bodySize = b.st_size;
             }
         }
 
         std::string response =  "HTTP/1.1 " + status + "\r\n"
                                 "Content-Type: " + contentType + "\r\n"
-                                "Content-Length: " + std::to_string(body.size()) + "\r\n"
+                                "Content-Length: " + std::to_string(bodySize) + "\r\n"
                                 "Connection: " + openOrClose + "\r\n"
-                                 "\r\n" +
+                                "\r\n" +
                                 body;
 
         if (!sendAll(socket, response))
         {
             perror("send");
+            break;
         }
+
+        if (isFileResponse)
+        {
+            if (!sendFileAll(fd, socket))
+            {
+                perror("sendfile");
+                status = "500 Internal Server Error";
+                body = "500 Internal Server Error";
+                contentType = "text/plain";
+            }
+        }
+        close(fd);
 
         if (shouldClose == true)
         {
@@ -370,7 +392,7 @@ int main()
             close(new_fd);
             continue;
         }
-        
+
         log("Connected: " + std::string(ip));
 
         pool.enqueue([new_fd]
