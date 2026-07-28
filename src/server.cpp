@@ -17,7 +17,7 @@
 #include "ThreadPool.h"
 
 #define PORT "8080"
-#define BACKLOG 10
+#define BACKLOG 1024
 
 std::mutex logMutex;
 
@@ -101,7 +101,7 @@ void handleClient(int socket)
         }
         else if (bytesRead == 0)
         {
-            log("Client disconnected.");
+            //log("Client disconnected.");
             close(socket);
             break; // Go back to accept() and wait for another client
         }
@@ -143,9 +143,9 @@ void handleClient(int socket)
             }
         }
 
-        log("Method: " + method);
-        log("Path: " + path);
-        log("Version: " + version);
+        //log("Method: " + method);
+        //log("Path: " + path);
+        //log("Version: " + version);
 
         std::string body, status;
         char readBuf[4096];
@@ -393,7 +393,7 @@ int main()
             continue;
         }
 
-        log("Connected: " + std::string(ip));
+        //log("Connected: " + std::string(ip));
 
         pool.enqueue([new_fd]
                      { handleClient(new_fd); }); // Creates a callable function instead of executing first
